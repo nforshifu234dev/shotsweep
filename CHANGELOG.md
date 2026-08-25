@@ -2,6 +2,23 @@
 
 All notable changes to the NFSFU234 ShotSweep Library will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and adheres to Semantic Versioning.
 
+## [1.1.0](https://github.com/nforshifu234dev/shotsweep/compare/v1.0.0...v1.1.0) (2026-08-25)
+
+
+### Features
+
+* add CI workflow to run tests on pull requests ([7044f29](https://github.com/nforshifu234dev/shotsweep/commit/7044f29974277d8275a7983b4845c2ee872d6ee5))
+* add CI workflow to run tests on pull requests ([b2853bc](https://github.com/nforshifu234dev/shotsweep/commit/b2853bc21833f820980348b306a0b7cc6e5036a1))
+* bootstrap @nfsfu234/shotsweep v0.1.0 ([2b2894a](https://github.com/nforshifu234dev/shotsweep/commit/2b2894aa3178d2171e8619a1468873de9e0a3370))
+
+
+### Bug Fixes
+
+* correct package links and bump Node engine to 22 ([11ed82b](https://github.com/nforshifu234dev/shotsweep/commit/11ed82b9cad7e9a9ab710e9274484c8c510e159d))
+* correct package links and bump Node engine to 22 ([2ed7e78](https://github.com/nforshifu234dev/shotsweep/commit/2ed7e78ded48656c840201d0fd45fafd1c08f9c4))
+* use PAT for release-please to allow triggering downstream workflows ([7bb1762](https://github.com/nforshifu234dev/shotsweep/commit/7bb1762c9e51b9024efc59b4aa02fb6201497799))
+* use PAT for release-please to allow triggering downstream workflows ([520ab2c](https://github.com/nforshifu234dev/shotsweep/commit/520ab2ca1e256a46a812bbf5a9142e94c8d4b597))
+
 ## 1.0.0 (2026-08-25)
 
 
