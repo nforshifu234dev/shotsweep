@@ -1,6 +1,6 @@
 {
   "name": "@nfsfu234/shotsweep",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Screenshot any site — single URL, an array, a CSV, or a whole sitemap — full page or sectioned, with generic bearer/header/cookie/form auth support and visual diffing between runs.",
   "author": "NFORSHIFU234 Dev",
   "homepage": "https://shotsweep.nforshifu234dev.com",
