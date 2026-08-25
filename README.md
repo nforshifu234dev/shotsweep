@@ -1073,17 +1073,17 @@ ShotSweep is part of the NFSFU234 ecosystem — a collection of developer tools 
 
 > **Solve a real problem. Keep it light. Make it useful on its own.**
 
-### `@nfsfu234/form-validation`
+### `@nfsfu234/formvalidation`
 
 HTML-first form validation built around the attributes already present in your forms.
 
-[https://form-validation.nforshifu234dev.com](https://form-validation.nforshifu234dev.com)
+[https://formvalidation.nforshifu234dev.com](https://formvalidation.nforshifu234dev.com)
 
 ### `@nfsfu234/tour-guide`
 
 React onboarding tours and product walkthroughs.
 
-[https://tour-guide.nforshifu234dev.com](https://tour-guide.nforshifu234dev.com)
+[https://tourguide.nforshifu234dev.com](https://tourguide.nforshifu234dev.com)
 
 ### `@nfsfu234/shotsweep`
 
