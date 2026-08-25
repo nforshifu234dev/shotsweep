@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Screenshot any site — single URL, an array, a CSV, or a whole sitemap — full page or sectioned, with generic bearer/header/cookie/form auth support and visual diffing between runs.",
   "author": "NFORSHIFU234 Dev",
-  "homepage": "https://nforshifu234dev.com",
+  "homepage": "https://shotsweep.nforshifu234dev.com",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/nforshifu234dev/shotsweep.git"
@@ -17,7 +17,7 @@
     "shotsweep": "bin/shotsweep.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "scripts": {
     "test": "node --test",

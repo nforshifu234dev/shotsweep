@@ -8,7 +8,7 @@ All notable changes to the NFSFU234 ShotSweep Library will be documented in this
 
 NFSFU234 ShotSweep is a command-line screenshot and visual regression tool built for developers who need repeatable website captures, automated visual comparisons, CI-friendly workflows, and reliable screenshot automation at scale.
 
-This is the first public release of ShotSweep and is being launched as part of **NFSFU234 Open Source Day**, alongside the established [NFSFU234 Tour Guide](https://tour-guide.nforshifu234dev.com/) and [NFSFU234 Form Validation](https://form-validation.nforshifu234dev.com/).
+This is the first public release of ShotSweep and is being launched as part of **NFSFU234 Open Source Day**, alongside the established [NFSFU234 Tour Guide](https://tourguide.nforshifu234dev.com/) and [NFSFU234 Form Validation](https://formvalidation.nforshifu234dev.com/).
 
 ### Added
 
@@ -75,7 +75,7 @@ This is the first public release of ShotSweep and is being launched as part of *
 
 NFSFU234 ShotSweep is launching as a **new project** for NFSFU234 Open Source Day on **August 25, 2026**.
 
-It joins the NFORSHIFU234 Dev open-source ecosystem alongside [NFSFU234 Tour Guide](https://tour-guide.nforshifu234dev.com/) and [NFSFU234 Form Validation](https://form-validation.nforshifu234dev.com/).
+It joins the NFORSHIFU234 Dev open-source ecosystem alongside [NFSFU234 Tour Guide](https://tourguide.nforshifu234dev.com/) and [NFSFU234 Form Validation](https://formvalidation.nforshifu234dev.com/).
 
 Learn more at the [NFSFU234 ShotSweep website](https://shotsweep.nforshifu234dev.com/).
 
