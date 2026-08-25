@@ -1,0 +1,24 @@
+[
+  "/",
+  "/about",
+  "/contact",
+  "/faq",
+
+  "/docs/v3",
+  "/docs/v3/getting-started",
+  "/docs/v3/quick-start",
+  "/docs/v3/installation",
+  "/docs/v3/usage",
+  "/docs/v3/configureForms",
+  "/docs/v3/ajax",
+  "/docs/v3/submit",
+  "/docs/v3/validate",
+  "/docs/v3/validateInput",
+  "/docs/v3/validateTextarea",
+  "/docs/v3/validateSelect",
+  "/docs/v3/validateRadio",
+  "/docs/v3/validateCheckbox",
+  "/docs/v3/validateFile",
+  "/docs/v3/available-functions",
+  "/docs/v3/changelog"
+]

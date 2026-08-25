@@ -1,0 +1,7 @@
+{
+  "csv": "./pages.csv",
+  "csvColumn": "page_url",
+  "viewport": ["1440x900"],
+  "mode": "full",
+  "out": "./screenshots"
+}

@@ -1,0 +1,7 @@
+{
+  "sitemap": "https://staging.example.com/sitemap.xml",
+  "header": ["X-Api-Key: REPLACE_ME"],
+  "cookie": ["feature_flags=all; Domain=staging.example.com"],
+  "viewport": ["1440x900"],
+  "out": "./staging-screenshots"
+}

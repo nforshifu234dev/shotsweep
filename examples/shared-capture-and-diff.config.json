@@ -1,0 +1,12 @@
+{
+  "sitemap": "https://example.com/sitemap.xml",
+  "viewport": ["1440x900", "390x844"],
+  "mode": "full",
+  "out": "./screenshots",
+
+  "diff": {
+    "out": "./diff",
+    "threshold": "0.2%",
+    "zip": true
+  }
+}

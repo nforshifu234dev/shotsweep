@@ -1,0 +1,6 @@
+{
+  "sitemap": "https://api.example.com/sitemap.xml",
+  "bearer": "REPLACE_WITH_YOUR_BEARER_TOKEN",
+  "viewport": ["1440x900"],
+  "out": "./screenshots"
+}

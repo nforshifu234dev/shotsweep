@@ -1,0 +1,7 @@
+{
+  "sitemap": "https://example.com/sitemap.xml",
+  "viewport": ["desktop", "tablet", "mobile"],
+  "mode": "full",
+  "concurrency": 2,
+  "out": "./responsive-screenshots"
+}

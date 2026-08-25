@@ -1,0 +1,7 @@
+{
+  "sitemap": "https://app.example.com/sitemap.xml",
+  "session": "./auth.json",
+  "viewport": ["1440x900"],
+  "zip": true,
+  "out": "./screenshots"
+}

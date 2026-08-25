@@ -1,0 +1,59 @@
+{
+  "name": "@nfsfu234/shotsweep",
+  "version": "0.1.0",
+  "description": "Screenshot any site — single URL, an array, a CSV, or a whole sitemap — full page or sectioned, with generic bearer/header/cookie/form auth support and visual diffing between runs.",
+  "author": "NFORSHIFU234 Dev",
+  "homepage": "https://nforshifu234dev.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nforshifu234dev/shotsweep.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nforshifu234dev/shotsweep/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "shotsweep": "bin/shotsweep.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test",
+    "postinstall": "playwright install chromium || true"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "keywords": [
+    "screenshot",
+    "cli",
+    "playwright",
+    "sitemap",
+    "visual-regression",
+    "screenshot-diff",
+    "qa",
+    "website",
+    "capture",
+    "nfsfu234"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "archiver": "^8.0.0",
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "csv-parse": "^5.5.6",
+    "fast-xml-parser": "^4.5.0",
+    "ora": "^8.1.0",
+    "pixelmatch": "^5.3.0",
+    "playwright": "^1.48.0",
+    "pngjs": "^7.0.0"
+  }
+}

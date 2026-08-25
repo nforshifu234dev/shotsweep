@@ -1,0 +1,41 @@
+# Publishes to npm via OIDC Trusted Publishing — no NPM_TOKEN secret needed.
+# Triggered on GitHub Release creation, same pattern as nfsfu234-tour-guide's
+# npm-publish.yml, but token-free per npm's Aug 2026 / Jan 2027 changes.
+name: Publish to npm
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm test
+
+  publish-npm:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # required for OIDC / trusted publishing
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org/
+      - name: Ensure npm CLI supports trusted publishing
+        run: npm install -g npm@latest
+      - run: npm ci
+      - name: Publish
+        run: npm publish --access public --provenance
+        # No NODE_AUTH_TOKEN — npm authenticates via the OIDC token this
+        # workflow's id-token permission generates, matched against the
+        # Trusted Publisher config on npmjs.com for this exact repo +
+        # workflow filename.

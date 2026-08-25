@@ -1,0 +1,11 @@
+# Ignore files and directories that are not needed in version control
+node_modules/
+screenshots/
+load_folders.py
+auth.json
+file_structure.txt
+file_structure_metadata.txt
+*.log
+.env
+hello.txt
+ruleset.md

@@ -1,0 +1,7 @@
+{
+  "sitemap": "https://example.com/sitemap.xml",
+  "dark": true,
+  "viewport": ["1440x900"],
+  "wait": 500,
+  "out": "./dark-mode-screenshots"
+}

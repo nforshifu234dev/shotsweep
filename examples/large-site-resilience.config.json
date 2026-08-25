@@ -1,0 +1,8 @@
+{
+  "sitemap": "https://example.com/sitemap.xml",
+  "viewport": ["1440x900"],
+  "concurrency": 4,
+  "retries": 2,
+  "timeout": 45000,
+  "out": "./screenshots"
+}

@@ -1,0 +1,9 @@
+{
+  "sitemap": "https://example.com/sitemap.xml",
+  "viewport": ["1440x900"],
+  "json": true,
+  "quiet": true,
+  "describe": true,
+  "zip": true,
+  "out": "./ci-screenshots"
+}
