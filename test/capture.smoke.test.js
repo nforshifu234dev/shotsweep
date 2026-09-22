@@ -97,3 +97,57 @@ test('runCapture reports a real error for a page that never responds, without cr
   assert.ok(entry.error, 'expected an error message for an unreachable URL');
   assert.equal(entry.file, undefined);
 });
+
+test('runCapture with mode "element" captures only the target element, cropped to its own size', async () => {
+  const { server, url } = await startFixtureServer();
+  const out = await tmpDir();
+
+  try {
+    const result = await runCapture({
+      url,
+      mode: 'element',
+      selector: '.box', // fixed 200x200 box in the fixture page — see smoke-page.html
+      viewport: ['desktop'],
+      out,
+      concurrency: 1,
+      timeout: 15000,
+      retries: 0,
+    });
+
+    assert.equal(result.manifest.length, 1);
+    const [entry] = result.manifest;
+    assert.equal(entry.error, undefined, `expected no error, got: ${entry.error}`);
+    assert.ok(entry.sizeBytes > 0, 'expected a non-empty screenshot file size');
+
+    // The file name encodes the captured element's bounding-box size —
+    // this is what proves we cropped to the element, not the full page
+    // (which is much taller than 200px due to the heading/paragraph above it).
+    assert.match(
+      path.basename(entry.file),
+      /^element-200x200\.png$/,
+      `expected a screenshot cropped to the .box element's 200x200 size, got filename: ${path.basename(entry.file)}`,
+    );
+
+    const stat = await fs.stat(entry.file);
+    assert.ok(stat.size > 0, 'expected the element screenshot file to actually exist and be non-empty');
+  } finally {
+    server.close();
+  }
+});
+
+test('runCapture with mode "element" and no --selector fails fast with a clear error', async () => {
+  const out = await tmpDir();
+
+  await assert.rejects(
+    () =>
+      runCapture({
+        url: 'http://localhost:1', // never reached — should fail before any navigation
+        mode: 'element',
+        out,
+        concurrency: 1,
+        timeout: 3000,
+        retries: 0,
+      }),
+    /--mode element requires --selector/,
+  );
+});

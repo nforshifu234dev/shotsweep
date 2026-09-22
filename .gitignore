@@ -9,3 +9,4 @@ file_structure_metadata.txt
 .env
 hello.txt
 ruleset.md
+*.diff
