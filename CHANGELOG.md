@@ -2,6 +2,13 @@
 
 All notable changes to the NFSFU234 ShotSweep Library will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and adheres to Semantic Versioning.
 
+## [1.2.0](https://github.com/nforshifu234dev/shotsweep/compare/v1.1.0...v1.2.0) (2026-09-22)
+
+
+### Features
+
+* add element/hero capture mode to ShotSweep ([13ab9f0](https://github.com/nforshifu234dev/shotsweep/commit/13ab9f0f332463653cfbc68fbe096c342f1a0bc6))
+
 ## [1.1.0](https://github.com/nforshifu234dev/shotsweep/compare/v1.0.0...v1.1.0) (2026-08-25)
 
 
