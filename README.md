@@ -291,6 +291,32 @@ This is useful for:
 * pages where individual sections are easier to review
 * CI artifacts where a giant full-page image is inconvenient
 
+## Element capture
+
+```bash
+shotsweep capture \
+  --url https://example.com \
+  --mode element \
+  --selector "[data-og-hero]"
+```
+
+Captures a screenshot of a single element, cropped tightly to its own
+rendered bounding box — not the full page, not the full viewport.
+
+`--selector` is required in this mode; omitting it fails immediately with a
+clear error before any page is navigated to.
+
+This is useful for:
+
+* generating a social-share (OG) preview image from a page's real, rendered
+  Hero section instead of a hand-built placeholder card
+* isolating one component/section for a visual regression baseline
+* any case where only one region of the page is meaningful as a standalone
+  image
+
+The output filename encodes the captured element's actual size, e.g.
+`element-1200x630.png`.
+
 ---
 
 # 🖥️ Viewports
@@ -794,6 +820,76 @@ The manifest records information such as:
 This manifest is what allows two independent runs to be compared later.
 
 It also makes capture output useful as a CI artifact rather than just a directory full of images.
+
+---
+
+# 🧾 Provenance & Replay Metadata
+
+Every capture run also writes:
+
+```text
+run-record.json
+```
+
+right alongside `manifest.json`. Where the manifest records *what was
+captured*, the run-record captures *the conditions it was captured under* —
+so a run from three months ago can be understood (and its verdict trusted)
+long after the fact, not just replayed as a story with no way to check it.
+
+A run-record contains:
+
+* ShotSweep version
+* Playwright version, browser engine, and browser (Chromium) version
+* Node version, OS platform, release, and architecture
+* the resolved configuration for the run, with any auth secrets
+  (`--bearer`, `--cookie`, `--header`, `--session`) redacted — the record
+  shows *that* auth was configured, never the credentials themselves
+* the input manifest path
+* SHA-256 hashes of every screenshot artifact produced by the run
+
+```json
+{
+  "recordVersion": 1,
+  "createdAt": "2026-09-22T08:00:00.000Z",
+  "tool": { "name": "@nfsfu234/shotsweep", "version": "1.2.0" },
+  "browser": {
+    "engine": "playwright",
+    "playwrightVersion": "1.48.0",
+    "browserName": "chromium",
+    "browserVersion": "129.0.6668.29"
+  },
+  "runtime": { "node": "v22.5.0", "platform": "linux", "release": "6.8.0", "arch": "x64" },
+  "resolvedConfig": { "url": "https://example.com", "mode": "full", "bearer": "[REDACTED]" },
+  "run": { "durationMs": 1830, "total": 1, "manifestPath": "/abs/path/manifest.json" },
+  "artifacts": [
+    { "url": "https://example.com", "mode": "full", "viewport": "1440x900", "file": "...", "sizeBytes": 88213, "sha256": "…" }
+  ]
+}
+```
+
+Skip writing it for a throwaway/local run with `--no-record`.
+
+## Environment drift detection in `diff`
+
+`shotsweep diff` automatically looks for a `run-record.json` next to each of
+the two manifests you're comparing. If both are present, it compares tool
+version, Playwright version, Chromium version, Node version, OS platform,
+and architecture between the baseline and current run, and flags anything
+that differs — directly in `diff-report.json` and as a warning in the CLI
+output. This is what tells you a "changed" verdict might be a font-hinting
+or renderer difference between two CI runners rather than an actual change
+to the pages themselves.
+
+`diff-report.json` also gets a `provenance` block (which manifests/records
+were compared, and any drift found), a `diffConfiguration` block (the
+threshold used), and a `decision` block (`pass`/`fail`, regression count,
+whether drift was detected) — plus a SHA-256 hash of each `old.png`/
+`new.png`/`diff.png` written for a changed page, so the images referenced
+in the report can be verified later, not just trusted.
+
+None of this is required to use `diff` — a manifest with no matching
+`run-record.json` (e.g. from before this feature existed, or from a
+`--no-record` run) diffs exactly as before, just without the drift check.
 
 ---
 

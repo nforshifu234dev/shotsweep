@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { PNG } from 'pngjs';
 import pixelmatch from 'pixelmatch';
+import { loadRunRecordFor, compareEnvironments, sha256File } from './provenance.js';
 
 /**
  * Named `--threshold` presets, expressed as the fraction of differing pixels
@@ -123,12 +124,25 @@ async function loadPng(filePath) {
  * @param {string} params.newManifest - Path to the newer run's `manifest.json`.
  * @param {string} params.out - Directory to write diff images and the report to.
  * @param {number} [params.threshold=0.001] - Fraction of differing pixels (0–1) above which a page counts as `'changed'`.
- * @returns {Promise<{ summary: { changed: number, unchanged: number, added: number, removed: number, sizeChanged: number, regressions: number }, results: object[], reportPath: string }>}
- *   A summary of change counts by status, the full per-page result list, and the path the JSON report was written to.
+ * @returns {Promise<{ summary: { changed: number, unchanged: number, added: number, removed: number, sizeChanged: number, regressions: number }, results: object[], reportPath: string, environment: { comparable: boolean, drift: string[] }, decision: { verdict: 'pass'|'fail', regressions: number, environmentDriftDetected: boolean } }>}
+ *   A summary of change counts by status, the full per-page result list, the path the JSON report was written to,
+ *   the environment-drift comparison between the two runs' provenance records (see {@link compareEnvironments}
+ *   — `comparable: false` if either run has no `run-record.json`), and a top-level pass/fail decision.
  */
 export async function runDiff({ oldManifest, newManifest, out, threshold }) {
   const oldEntries = (await readManifest(oldManifest)).filter((e) => !e.error && e.file);
   const newEntries = (await readManifest(newManifest)).filter((e) => !e.error && e.file);
+
+  // Provenance: pull in each side's run-record (if one was written) so the
+  // report can flag when a visual diff might be explained by the runs
+  // themselves not executing under the same conditions, rather than by an
+  // actual change to the pages. Missing on either side just means no
+  // drift check runs — it never blocks the diff itself.
+  const [oldRecord, newRecord] = await Promise.all([
+    loadRunRecordFor(oldManifest),
+    loadRunRecordFor(newManifest),
+  ]);
+  const environment = compareEnvironments(oldRecord, newRecord);
 
   const oldByKey = new Map(oldEntries.map((e) => [keyFor(e), e]));
   const newByKey = new Map(newEntries.map((e) => [keyFor(e), e]));
@@ -173,6 +187,7 @@ export async function runDiff({ oldManifest, newManifest, out, threshold }) {
     let diffImage = null;
     let oldImage = null;
     let newImage = null;
+    let artifactHashes = null;
 
     if (changed) {
       const safeName = key.replace(/[^a-z0-9]+/gi, '_').slice(0, 120);
@@ -188,13 +203,23 @@ export async function runDiff({ oldManifest, newManifest, out, threshold }) {
         fs.copyFile(newEntry.file, newImage),
         fs.writeFile(diffImage, PNG.sync.write(diffPng)),
       ]);
+
+      // Content hashes of the exact bytes written above — lets an auditor
+      // confirm later that old.png/new.png/diff.png haven't been swapped
+      // or altered since this run produced them.
+      const [oldHash, newHash, diffHash] = await Promise.all([
+        sha256File(oldImage),
+        sha256File(newImage),
+        sha256File(diffImage),
+      ]);
+      artifactHashes = { old: oldHash, new: newHash, diff: diffHash };
     }
 
     results.push({
       key, url: newEntry.url, viewport: newEntry.viewport,
       status: changed ? 'changed' : 'unchanged',
       diffPixels, totalPixels, diffRatio,
-      oldImage, newImage, diffImage,
+      oldImage, newImage, diffImage, artifactHashes,
     });
   }
 
@@ -208,8 +233,37 @@ export async function runDiff({ oldManifest, newManifest, out, threshold }) {
 
   summary.regressions = summary.changed + summary.sizeChanged;
 
-  const reportPath = path.join(out, 'diff-report.json');
-  await fs.writeFile(reportPath, JSON.stringify({ summary, results }, null, 2));
+  const decision = {
+    verdict: summary.regressions > 0 ? 'fail' : 'pass',
+    regressions: summary.regressions,
+    environmentDriftDetected: environment.drift.length > 0,
+  };
 
-  return { summary, results, reportPath };
+  const reportPath = path.join(out, 'diff-report.json');
+  await fs.writeFile(
+    reportPath,
+    JSON.stringify(
+      {
+        summary,
+        results,
+        // baseline/current provenance references — full records aren't
+        // duplicated here (they're already on disk next to each
+        // manifest), this just points at what was compared and flags
+        // any drift between them.
+        provenance: {
+          oldManifest: path.resolve(oldManifest),
+          newManifest: path.resolve(newManifest),
+          oldRunRecordFound: !!oldRecord,
+          newRunRecordFound: !!newRecord,
+          environmentDrift: environment.drift,
+        },
+        diffConfiguration: { threshold: threshold ?? 0.001 },
+        decision,
+      },
+      null,
+      2,
+    ),
+  );
+
+  return { summary, results, reportPath, environment, decision };
 }

@@ -207,7 +207,11 @@ export function run(argv) {
       '--paths <file>',
       'JSON array or newline-delimited file of relative paths, used with --base',
     )
-    .option('--mode <mode>', 'full or sections', 'full')
+    .option('--mode <mode>', 'full, sections, or element', 'full')
+    .option(
+      '--selector <css>',
+      'CSS selector of the single element to capture (required with --mode element, e.g. for capturing just a page\'s Hero)',
+    )
     .option(
       '--viewport <WxH>',
       'repeatable, e.g. --viewport 1440x900',
@@ -323,6 +327,10 @@ export function run(argv) {
       false,
     )
     .option(
+      '--no-record',
+      'skip writing run-record.json (tool/browser/OS versions, resolved config, artifact hashes) — written by default',
+    )
+    .option(
       '--dry-run',
       'resolve and print target URLs without capturing anything',
       false,
@@ -413,7 +421,7 @@ export function run(argv) {
             : undefined,
         });
 
-        const { manifest, manifestPath, zipPath, durationMs, total } = result;
+        const { manifest, manifestPath, zipPath, recordPath, durationMs, total } = result;
         const successful = manifest.filter((entry) => !entry.error).length;
         const failed = manifest.filter((entry) => entry.error).length;
         const seconds = (durationMs / 1000).toFixed(1);
@@ -434,6 +442,7 @@ export function run(argv) {
             avgMs,
             manifestPath,
             zipPath,
+            recordPath,
           }));
         } else {
           spinner?.succeed(
@@ -444,6 +453,7 @@ export function run(argv) {
           console.log(chalk.dim(`Done in ${duration} (avg ${average}/page)`));
           console.log(chalk.dim(`Manifest: ${manifestPath}`));
           if (zipPath) console.log(chalk.dim(`Zip: ${zipPath}`));
+          if (recordPath) console.log(chalk.dim(`Run record: ${recordPath}`));
           if (merged.describe) {
             console.log('\n' + chalk.dim('--- AI description ---'));
             console.log(buildAiDescription(manifest, merged));
@@ -592,9 +602,15 @@ Examples:
         // `--threshold` parser, so normalize here regardless of source.
         merged.threshold = normalizeThreshold(merged.threshold);
 
-        const { summary, reportPath } = await runDiff({
+        const { summary, reportPath, environment, decision } = await runDiff({
           oldManifest, newManifest, out: merged.out, threshold: merged.threshold,
         });
+
+        const driftWarning =
+          environment.comparable && environment.drift.length
+            ? `⚠ Environment drift detected between baseline and current run — this diff's verdict may reflect environment changes, not just page changes:\n` +
+              environment.drift.map((line) => `    - ${line}`).join('\n')
+            : null;
 
         const summaryText = buildDiffSummary(summary);
 
@@ -607,11 +623,12 @@ Examples:
         if (merged.zip) zipPath = await zipOutput(merged.out);
 
         if (merged.json) {
-          console.log(JSON.stringify({ summary, reportPath, zipPath }));
+          console.log(JSON.stringify({ summary, reportPath, zipPath, environment, decision }));
         } else if (merged.summary) {
           spinner?.stop();
 
           console.log(`\n${summaryText}`);
+          if (driftWarning) console.log(`\n${chalk.yellow(driftWarning)}`);
 
           console.log(chalk.dim(`\nReport: ${reportPath}`));
         } else {
@@ -624,6 +641,7 @@ Examples:
           );
           console.log(chalk.dim(`Report: ${reportPath}`));
           if (zipPath) console.log(chalk.dim(`Zip: ${zipPath}`));
+          if (driftWarning) console.log(chalk.yellow(driftWarning));
         }
 
         if (summary.regressions > 0) {

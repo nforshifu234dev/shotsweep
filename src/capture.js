@@ -6,6 +6,8 @@ import { chromium } from 'playwright';
 import { resolveTargets, outDirFor } from './inputs.js';
 import { buildContextOptions } from './auth.js';
 import { captureSections } from './sections.js';
+import { captureElement } from './element.js';
+import { buildRunRecord, writeRunRecord } from './provenance.js';
 import { zipOutput } from './zip.js';
 import { withRetries } from './retry.js';
 
@@ -90,7 +92,8 @@ async function runWithConcurrency(items, limit, worker) {
  * @param {number} [opts.limit] - Only capture the first N resolved URLs (applied after --replace-origin, before viewport expansion).
  * @param {number} [opts.offset=0] - Skip the first N resolved URLs before applying `opts.limit`.
  * @param {boolean} [opts.resume] - Skip URL/viewport jobs that already have a successful (non-error) entry in `opts.out`'s existing `manifest.json`. Note: for `mode: 'sections'`, completeness is checked per URL/viewport, not per individual section file — see the note on `captureSections` for the known limitation this implies for interrupted section runs.
- * @param {string} [opts.mode='full'] - Capture mode: `'full'` for a single full-page screenshot, or `'sections'` for viewport-height slices.
+ * @param {string} [opts.mode='full'] - Capture mode: `'full'` for a single full-page screenshot, `'sections'` for viewport-height slices, or `'element'` for a single element cropped to its own bounding box (requires `opts.selector`).
+ * @param {string} [opts.selector] - CSS selector identifying the element to capture. Required when `opts.mode === 'element'`; ignored otherwise.
  * @param {string[]} [opts.viewport] - Repeatable viewport specs/presets; defaults to `['desktop']` if empty.
  * @param {string} [opts.wait] - A fixed delay in ms, or a CSS selector, to wait for before capturing.
  * @param {string} [opts.waitUntil='load'] - Playwright's `waitUntil` condition for `page.goto` — `'domcontentloaded'`, `'load'`, or `'networkidle'`.
@@ -104,14 +107,15 @@ async function runWithConcurrency(items, limit, worker) {
  * @param {number} [opts.timeout] - Per-page navigation timeout in ms.
  * @param {number} [opts.retries=0] - Number of times to retry a failed page load.
  * @param {boolean} [opts.zip] - Whether to bundle the output directory into a `.zip` when done.
+ * @param {boolean} [opts.record=true] - Whether to write a `run-record.json` provenance snapshot (tool/browser/OS versions, redacted config, content-hashed artifacts) to `opts.out`. Pass `false` to skip it for throwaway/local runs.
  * @param {boolean} [opts.dryRun] - If true, resolve (and slice) targets and return them without capturing anything.
  * @param {(...args: unknown[]) => void} [opts.debug] - Optional debug logger function.
  * @param {(targets: string[]) => void} [opts.onResolved] - Callback fired once target URLs are resolved and `--limit`/`--offset` applied.
  * @param {(progress: { completed: number, total: number, url: string, viewport: string, ok: boolean }) => void} [opts.onProgress] - Callback fired after each URL/viewport job completes. `total` reflects the job count after any `--resume` skipping.
- * @returns {Promise<{ dryRun?: boolean, targets?: string[], manifest: object[], manifestPath: string|null, zipPath: string|null, durationMs?: number, total?: number }>}
+ * @returns {Promise<{ dryRun?: boolean, targets?: string[], manifest: object[], manifestPath: string|null, zipPath: string|null, recordPath?: string|null, durationMs?: number, total?: number }>}
  *   On a dry run: the resolved (and sliced) `targets` and an empty manifest. Otherwise: the
  *   merged manifest entries (previous run's entries plus this run's), the path `manifest.json` was written to, the zip
- *   path (if `opts.zip` was set), the total run duration in ms, and the total
+ *   path (if `opts.zip` was set), the path `run-record.json` was written to (`null` if `opts.record` was `false`), the total run duration in ms, and the total
  *   number of URL/viewport jobs actually run (after `--resume` skipping).
  * @throws {Error} If no URLs could be resolved from the given input.
  */
@@ -120,6 +124,19 @@ export async function runCapture(opts) {
     typeof opts.debug === 'function'
       ? opts.debug
       : () => {};
+
+  const validModes = ['full', 'sections', 'element'];
+  if (opts.mode && !validModes.includes(opts.mode)) {
+    throw new Error(
+      `Invalid --mode "${opts.mode}". Expected one of: ${validModes.join(', ')}.`,
+    );
+  }
+
+  if (opts.mode === 'element' && !opts.selector) {
+    throw new Error(
+      '--mode element requires --selector <css> identifying the element to capture.',
+    );
+  }
 
   const targets = await resolveTargets(opts);
 
@@ -151,6 +168,7 @@ export async function runCapture(opts) {
       manifest: [],
       manifestPath: null,
       zipPath: null,
+      recordPath: null,
     };
   }
 
@@ -197,6 +215,7 @@ export async function runCapture(opts) {
 
   const { contextOptions, cookies } = await buildContextOptions(opts);
   const browser = await chromium.launch();
+  const browserVersion = browser.version();
 
   let jobs = scopedTargets.flatMap((url) => viewports.map((viewport) => ({ url, viewport }))); // was: targets.flatMap(...)
 
@@ -237,7 +256,17 @@ export async function runCapture(opts) {
       }
 
       let files = [];
-      if (opts.mode === 'sections') {
+      if (opts.mode === 'element') {
+        files = await captureElement(
+          page,
+          opts.selector,
+          outDirPath,
+          path,
+          fs,
+          opts.debug,
+          { timeout: opts.timeout },
+        );
+      } else if (opts.mode === 'sections') {
         files = await captureSections(page, viewport, outDirPath, path, fs, opts.debug);
       } else {
         const fileName = `full-${viewport.width}x${viewport.height}.png`;
@@ -292,8 +321,25 @@ export async function runCapture(opts) {
   // both now reuse the ones read at the top of the function
   await fs.writeFile(manifestPath, JSON.stringify([...existing, ...manifest], null, 2));
 
+  // Provenance record: a snapshot of the tool/browser/OS versions, the
+  // resolved (secret-redacted) config, and content-hashed artifacts for
+  // *this* run specifically — not the merged historical manifest above.
+  // Opt-out via --no-record for local/throwaway runs that don't need it.
+  let recordPath = null;
+  if (opts.record !== false) {
+    const record = await buildRunRecord({
+      opts,
+      browserVersion,
+      manifest,
+      manifestPath,
+      durationMs,
+      total,
+    });
+    recordPath = await writeRunRecord(opts.out, record);
+  }
+
   let zipPath = null;
   if (opts.zip) zipPath = await zipOutput(opts.out);
 
-  return { manifest, manifestPath, zipPath, durationMs, total };
+  return { manifest, manifestPath, zipPath, durationMs, total, recordPath };
 }
