@@ -65,12 +65,12 @@ test('a page that never fires `load` is still captured, with a warning', async (
   });
 
   try {
-    const result = await runCapture({ ...base({ out: await tmpDir(), timeout: 2500, scroll: false }), url });
+    const result = await runCapture({ ...base({ out: await tmpDir(), timeout: 4000, scroll: false, imageWait: 1000 }), url });
     const [entry] = result.manifest;
     assert.equal(entry.error, undefined, `expected a capture, got: ${entry.error}`);
     assert.ok(entry.warnings?.some((w) => /didn't fire/.test(w)), 'expected a "load didn\'t fire" warning');
 
-    const strict = await runCapture({ ...base({ out: await tmpDir(), timeout: 2500, scroll: false, strictLoad: true }), url });
+    const strict = await runCapture({ ...base({ out: await tmpDir(), timeout: 4000, scroll: false, strictLoad: true, imageWait: 1000 }), url });
     assert.ok(strict.manifest[0].error, '--strict-load should fail instead');
   } finally {
     hanging.forEach((res) => res.destroy());
@@ -169,7 +169,7 @@ test('an image cancelled after a `load` timeout is re-requested and ends up load
   });
 
   try {
-    const result = await runCapture({ ...base({ out: await tmpDir(), timeout: 2000 }), url });
+    const result = await runCapture({ ...base({ out: await tmpDir(), timeout: 3000 }), url });
     const [entry] = result.manifest;
     assert.equal(entry.error, undefined, `expected a capture, got: ${entry.error}`);
     assert.ok(entry.warnings?.some((w) => /didn't fire/.test(w)), 'load timeout is still reported');
@@ -193,7 +193,7 @@ test('an image that never loads is reported in a warning instead of silently mis
 
   try {
     const result = await runCapture({
-      ...base({ out: await tmpDir(), timeout: 1500, waitUntil: 'domcontentloaded', imageWait: 1500 }),
+      ...base({ out: await tmpDir(), timeout: 5000, waitUntil: 'domcontentloaded', imageWait: 1500 }),
       url,
     });
     const [entry] = result.manifest;

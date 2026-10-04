@@ -36,7 +36,9 @@ test('zipOutput writes the archive next to the folder, including when run from i
   process.chdir(dir);
   try {
     const zipPath = await zipOutput('.');
-    assert.equal(zipPath, path.join(await fs.realpath(parent), 'shots.zip'));
+    // Compare real paths on both sides: Windows CI temp folders use 8.3 short
+    // names (RUNNER~1) that realpath() expands but process.cwd() may not.
+    assert.equal(await fs.realpath(zipPath), path.join(await fs.realpath(parent), 'shots.zip'));
     assert.ok((await fs.stat(zipPath)).size > 0);
   } finally {
     process.chdir(cwd);
