@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { PNG } from 'pngjs';
 import pixelmatch from 'pixelmatch';
 import { loadRunRecordFor, compareEnvironments, sha256File } from './provenance.js';
@@ -82,7 +83,18 @@ export function normalizeThreshold(value) {
  * @returns {string} A composite key identifying this URL/viewport/file combination.
  */
 function keyFor(entry) {
-  return `${entry.url}::${entry.viewport}::${path.basename(entry.file || '')}`;
+  // Canonicalise the URL so `https://x.com` and `https://x.com/` (which are
+  // the same page, but were recorded differently depending on how the URL was
+  // typed) still match across runs. Split on both slash styles because a
+  // manifest written on Windows can be diffed on Linux CI and vice versa.
+  let url = entry.url;
+  try {
+    url = new URL(entry.url).href;
+  } catch {
+    // keep the raw string if it isn't a valid URL
+  }
+  const fileName = String(entry.file || '').split(/[\\/]/).pop();
+  return `${url}::${entry.viewport}::${fileName}`;
 }
 
 /**
@@ -92,9 +104,54 @@ function keyFor(entry) {
  * @returns {Promise<object[]>} The parsed manifest entries, or `[]` if the file didn't contain an array.
  */
 async function readManifest(manifestPath) {
-  const raw = await fs.readFile(manifestPath, 'utf8');
-  const data = JSON.parse(raw);
-  return Array.isArray(data) ? data : [];
+  const raw = (await fs.readFile(manifestPath, 'utf8')).replace(/^\uFEFF/, '');
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`Could not parse ${manifestPath}: ${err.message}`);
+  }
+  if (!Array.isArray(data)) {
+    throw new Error(`${manifestPath} doesn't look like a ShotSweep manifest (expected a JSON array).`);
+  }
+  return data;
+}
+
+/**
+ * Finds a manifest entry's screenshot on disk.
+ *
+ * `file` is recorded relative to the directory the capture was *run from*,
+ * and (before this was normalised) with that machine's path separators — so
+ * a manifest moved to another folder, another machine, or from Windows to
+ * Linux CI won't resolve as-is. Tries, in order: the path as recorded
+ * (separators normalised), the path relative to the manifest's folder, and
+ * progressively shorter tails of the path under the manifest's folder (which
+ * handles `file: "screenshots/example.com/home/full.png"` sitting beside a
+ * `screenshots/manifest.json`).
+ *
+ * @param {string} manifestPath - Path to the manifest the entry came from.
+ * @param {string} file - The entry's recorded `file` value.
+ * @returns {Promise<string>} The first candidate that exists, or the normalised original if none do.
+ */
+export async function resolveManifestFile(manifestPath, file) {
+  const normalized = String(file).replace(/\\/g, '/');
+  const manifestDir = path.dirname(path.resolve(manifestPath));
+  const segments = normalized.split('/').filter((seg) => seg && seg !== '.');
+
+  const candidates = [normalized, path.resolve(manifestDir, normalized)];
+  for (let i = 1; i < segments.length; i++) {
+    candidates.push(path.join(manifestDir, ...segments.slice(i)));
+  }
+
+  for (const candidate of candidates) {
+    try {
+      await fs.access(candidate);
+      return candidate;
+    } catch {
+      // try the next candidate
+    }
+  }
+  return normalized;
 }
 
 /**
@@ -124,14 +181,20 @@ async function loadPng(filePath) {
  * @param {string} params.newManifest - Path to the newer run's `manifest.json`.
  * @param {string} params.out - Directory to write diff images and the report to.
  * @param {number} [params.threshold=0.001] - Fraction of differing pixels (0–1) above which a page counts as `'changed'`.
- * @returns {Promise<{ summary: { changed: number, unchanged: number, added: number, removed: number, sizeChanged: number, regressions: number }, results: object[], reportPath: string, environment: { comparable: boolean, drift: string[] }, decision: { verdict: 'pass'|'fail', regressions: number, environmentDriftDetected: boolean } }>}
+ * @returns {Promise<{ summary: { changed: number, unchanged: number, added: number, removed: number, sizeChanged: number, errors: number, regressions: number }, results: object[], reportPath: string, environment: { comparable: boolean, drift: string[] }, decision: { verdict: 'pass'|'fail', regressions: number, environmentDriftDetected: boolean } }>}
  *   A summary of change counts by status, the full per-page result list, the path the JSON report was written to,
  *   the environment-drift comparison between the two runs' provenance records (see {@link compareEnvironments}
  *   — `comparable: false` if either run has no `run-record.json`), and a top-level pass/fail decision.
  */
 export async function runDiff({ oldManifest, newManifest, out, threshold }) {
-  const oldEntries = (await readManifest(oldManifest)).filter((e) => !e.error && e.file);
-  const newEntries = (await readManifest(newManifest)).filter((e) => !e.error && e.file);
+  const loadEntries = async (manifestPath) => {
+    const entries = (await readManifest(manifestPath)).filter((e) => !e.error && e.file);
+    return Promise.all(
+      entries.map(async (e) => ({ ...e, file: await resolveManifestFile(manifestPath, e.file) })),
+    );
+  };
+  const oldEntries = await loadEntries(oldManifest);
+  const newEntries = await loadEntries(newManifest);
 
   // Provenance: pull in each side's run-record (if one was written) so the
   // report can flag when a visual diff might be explained by the runs
@@ -164,7 +227,20 @@ export async function runDiff({ oldManifest, newManifest, out, threshold }) {
       continue;
     }
 
-    const [oldPng, newPng] = await Promise.all([loadPng(oldEntry.file), loadPng(newEntry.file)]);
+    let oldPng;
+    let newPng;
+    try {
+      [oldPng, newPng] = await Promise.all([loadPng(oldEntry.file), loadPng(newEntry.file)]);
+    } catch (err) {
+      // A screenshot listed in a manifest that is missing or isn't a valid PNG
+      // can't be compared. Report it per-page (and fail the run) instead of
+      // aborting the whole diff with a stack trace.
+      results.push({
+        key, url: newEntry.url, viewport: newEntry.viewport, status: 'error',
+        error: `Could not compare screenshots: ${err.message}`,
+      });
+      continue;
+    }
 
     if (oldPng.width !== newPng.width || oldPng.height !== newPng.height) {
       results.push({
@@ -190,7 +266,10 @@ export async function runDiff({ oldManifest, newManifest, out, threshold }) {
     let artifactHashes = null;
 
     if (changed) {
-      const safeName = key.replace(/[^a-z0-9]+/gi, '_').slice(0, 120);
+      // The hash keeps long keys (many section files of one long URL differ
+      // only at the very end) from being truncated into the same folder.
+      const keyHash = crypto.createHash('sha256').update(key).digest('hex').slice(0, 8);
+      const safeName = `${key.replace(/[^a-z0-9]+/gi, '_').slice(0, 100)}_${keyHash}`;
       const pairDir = path.join(out, safeName);
       await fs.mkdir(pairDir, { recursive: true });
 
@@ -229,9 +308,11 @@ export async function runDiff({ oldManifest, newManifest, out, threshold }) {
     added: results.filter((r) => r.status === 'added').length,
     removed: results.filter((r) => r.status === 'removed').length,
     sizeChanged: results.filter((r) => r.status === 'size-changed').length,
+    errors: results.filter((r) => r.status === 'error').length,
   };
 
-  summary.regressions = summary.changed + summary.sizeChanged;
+  // Fail closed: a page that couldn't be compared is not a page that passed.
+  summary.regressions = summary.changed + summary.sizeChanged + summary.errors;
 
   const decision = {
     verdict: summary.regressions > 0 ? 'fail' : 'pass',

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Scroll reveal fixture</title>
+  <style>
+    body { margin: 0; font-family: sans-serif; }
+    section { height: 900px; display: flex; align-items: center; justify-content: center; font-size: 48px; }
+    .reveal { opacity: 0; transition: opacity 0.2s; }
+    .reveal.visible { opacity: 1; }
+    #a { background: #ffd6d6; } #b { background: #d6ffd6; } #c { background: #d6d6ff; } #d { background: #fff3c4; }
+  </style>
+</head>
+<body>
+  <section id="a">Top</section>
+  <section id="b" class="reveal">Second</section>
+  <section id="c" class="reveal">Third</section>
+  <section id="d" class="reveal">Fourth</section>
+  <script>
+    // Same pattern as AOS / most marketing sites: hidden until scrolled into view.
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach((e) => { if (e.isIntersecting) e.target.classList.add('visible'); });
+    });
+    document.querySelectorAll('.reveal').forEach((el) => io.observe(el));
+  </script>
+</body>
+</html>

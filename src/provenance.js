@@ -29,6 +29,34 @@ export const RUN_RECORD_VERSION = 1;
 const SECRET_OPTION_KEYS = ['bearer', 'cookie', 'header', 'session'];
 
 /**
+ * `opts` keys whose values are URLs that may embed credentials
+ * (`https://user:password@host/…`).
+ *
+ * @type {string[]}
+ */
+const URL_OPTION_KEYS = ['url', 'sitemap', 'base', 'replaceOrigin'];
+
+/**
+ * Removes `user:password@` credentials from a URL string, leaving everything
+ * else intact. Values that aren't parseable URLs are returned unchanged.
+ *
+ * @param {string} value - A URL (or any string).
+ * @returns {string} The same string with any embedded credentials masked.
+ */
+export function redactUrlCredentials(value) {
+  if (typeof value !== 'string') return value;
+  try {
+    const parsed = new URL(value);
+    if (!parsed.username && !parsed.password) return value;
+    // Mask in the original string rather than re-serialising, so a URL the
+    // user typed without a trailing slash stays exactly as typed.
+    return value.replace(/\/\/[^/?#@]*@/, '//[REDACTED]@');
+  } catch {
+    return value;
+  }
+}
+
+/**
  * `opts` keys that are internal plumbing (callbacks, the debug logger) with
  * no meaningful audit value and no safe JSON representation. Excluded
  * entirely from the recorded configuration rather than redacted, since
@@ -93,7 +121,7 @@ export function redactConfig(opts) {
       continue;
     }
 
-    redacted[key] = value;
+    redacted[key] = URL_OPTION_KEYS.includes(key) ? redactUrlCredentials(value) : value;
   }
 
   return redacted;
