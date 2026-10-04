@@ -2,13 +2,13 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Command } from 'commander';
+import { Command, InvalidArgumentError } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
-import { chromium } from 'playwright';
 import { runCapture } from './capture.js';
 import { recordLoginSession } from './auth.js';
-import { loadConfig, mergeOptions } from './config.js';
+import { loadConfig, mergeOptions, findUnknownConfigKeys, toArray } from './config.js';
+import { launchBrowser } from './browser.js';
 import { buildAiDescription } from './describe.js';
 import { runDiff, normalizeThreshold, THRESHOLD_PRESETS } from './diff.js';
 import { createDebugLogger } from './debug.js';
@@ -127,6 +127,62 @@ function formatDuration(ms) {
 }
 
 /**
+ * Commander parser factory for integer options.
+ *
+ * @param {string} flag - The flag name, for the error message (e.g. `--limit`).
+ * @param {number} min - The smallest accepted value.
+ * @returns {(value: string) => number} A parser that throws on anything that isn't an integer >= `min`.
+ */
+function integerParser(flag, min) {
+  return (value) => {
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < min) {
+      throw new InvalidArgumentError(
+        `Invalid ${flag} value "${value}". Expected ${min === 0 ? '0 or a positive integer' : 'a positive integer'}.`,
+      );
+    }
+    return parsed;
+  };
+}
+
+/**
+ * Makes the repeatable options (`--viewport`, `--header`, `--cookie`)
+ * uniformly arrays, whether they came from repeated CLI flags or from a
+ * config file that wrote a single string (`"viewport": "1440x900"`).
+ *
+ * @param {object} merged - The merged capture options.
+ * @returns {object} The same options with those keys normalised to arrays.
+ */
+function normalizeRepeatable(merged) {
+  return {
+    ...merged,
+    viewport: toArray(merged.viewport),
+    header: toArray(merged.header),
+    cookie: toArray(merged.cookie),
+  };
+}
+
+/**
+ * Prints one line per failed capture — with the first line of its error —
+ * and any warnings, so a failed run explains itself without `--debug`.
+ *
+ * @param {object[]} manifest - This run's manifest entries.
+ * @returns {void}
+ */
+function printProblems(manifest) {
+  const firstLine = (text) => String(text).split('\n')[0];
+
+  for (const entry of manifest.filter((e) => e.error)) {
+    console.log(chalk.red(`  ✗ ${entry.url} (${entry.viewport}): ${firstLine(entry.error)}`));
+  }
+  for (const entry of manifest.filter((e) => e.warnings?.length)) {
+    for (const warning of entry.warnings) {
+      console.log(chalk.yellow(`  ⚠ ${entry.url} (${entry.viewport}): ${warning}`));
+    }
+  }
+}
+
+/**
  * Builds a human-readable visual regression summary from a diff result.
  *
  * The summary is intentionally plain text so it can be:
@@ -141,6 +197,7 @@ function formatDuration(ms) {
  * @param {number} summary.unchanged - Number of pages with no visual changes.
  * @param {number} summary.added - Number of newly added pages.
  * @param {number} summary.removed - Number of removed pages.
+ * @param {number} [summary.errors] - Number of pages that couldn't be compared (missing or unreadable screenshots).
  * @returns {string} A formatted, human-readable visual regression summary.
  */
 function buildDiffSummary(summary) {
@@ -158,6 +215,7 @@ function buildDiffSummary(summary) {
     `  Unchanged : ${summary.unchanged}`,
     `  Added     : ${summary.added}`,
     `  Removed   : ${summary.removed}`,
+    ...(summary.errors ? [`  Errors    : ${summary.errors} (could not be compared)`] : []),
   ].join('\n');
 }
 
@@ -225,18 +283,51 @@ export function run(argv) {
       (value) => {
         const valid = ['domcontentloaded', 'load', 'networkidle'];
         if (!valid.includes(value)) {
-          throw new Error(`Invalid --wait-until "${value}". Expected one of: ${valid.join(', ')}.`);
+          throw new InvalidArgumentError(`Invalid --wait-until "${value}". Expected one of: ${valid.join(', ')}.`);
         }
         return value;
       },
       'load',
     )
     .option(
+      '--no-scroll',
+      'skip the top-to-bottom scroll that triggers scroll-reveal animations and lazy-loaded images (on by default for full and sections modes)',
+    )
+    .option(
+      '--image-wait <ms>',
+      'after scrolling, how long to wait for images that are still loading (default 10000); unfinished images are reported as a warning',
+      integerParser('--image-wait', 0),
+    )
+    .option(
+      '--strict-load',
+      'fail a page if --wait-until times out, instead of capturing it anyway (with a warning) when its document is already usable',
+      false,
+    )
+    .option(
+      '--freeze-animations',
+      'fast-forward finite CSS animations and cancel infinite ones while capturing, for steadier screenshots and diffs',
+      false,
+    )
+    .option(
+      '--user-agent <string>',
+      'present this User-Agent instead of headless Chromium\'s (some hosts block "HeadlessChrome")',
+    )
+    .option(
+      '--ignore-https-errors',
+      'accept invalid or self-signed TLS certificates (e.g. staging servers)',
+      false,
+    )
+    .option(
+      '--headers-all-origins',
+      'send --bearer/--header values to every origin the page contacts, not just the captured site (default: captured site only, so tokens never reach third parties)',
+      false,
+    )
+    .option(
       '--replace-origin <url>',
       "rewrite every resolved URL's origin to this",
     )
-    .option('--limit <n>', 'only capture the first N resolved URLs', (v) => parseInt(v, 10))
-    .option('--offset <n>', 'skip the first N resolved URLs before capturing', (v) => parseInt(v, 10), 0)
+    .option('--limit <n>', 'only capture the first N resolved URLs', integerParser('--limit', 1))
+    .option('--offset <n>', 'skip the first N resolved URLs before capturing', integerParser('--offset', 0), 0)
     .option('--dark', 'emulate prefers-color-scheme: dark', false)
     .option('--out <dir>', 'output directory', './screenshots')
     .option('--session <file>', 'reuse a saved storageState session')
@@ -268,7 +359,7 @@ export function run(argv) {
         const parsed = Number.parseInt(value, 10);
 
         if (!Number.isInteger(parsed) || parsed < 1) {
-          throw new Error(`Invalid --concurrency value "${value}". Expected a positive integer.`);
+          throw new InvalidArgumentError(`Invalid --concurrency value "${value}". Expected a positive integer.`);
         }
 
         return parsed;
@@ -290,7 +381,7 @@ export function run(argv) {
         const parsed = Number.parseInt(value, 10);
 
         if (!Number.isInteger(parsed) || parsed < 1) {
-          throw new Error(`Invalid --timeout value "${value}". Expected a positive integer.`);
+          throw new InvalidArgumentError(`Invalid --timeout value "${value}". Expected a positive integer.`);
         }
 
         return parsed;
@@ -312,7 +403,7 @@ export function run(argv) {
         const parsed = Number.parseInt(value, 10);
 
         if (!Number.isInteger(parsed) || parsed < 0) {
-          throw new Error(`Invalid --retries value "${value}". Expected 0 or a positive integer.`);
+          throw new InvalidArgumentError(`Invalid --retries value "${value}". Expected 0 or a positive integer.`);
         }
 
         return parsed;
@@ -366,30 +457,57 @@ export function run(argv) {
      * @returns {Promise<void>}
      */
     .action(async (opts, command) => {
-      const config = await loadConfig();
-      const merged = mergeOptions(config, opts, command);
+      // Parsed as early as possible so even config errors can honour --json.
+      const wantsJson = Boolean(opts.json);
+      const reportFailure = (err, spinner, debugEnabled) => {
+        if (wantsJson) {
+          console.log(JSON.stringify({ error: err.message }));
+        } else {
+          if (spinner) spinner.fail(chalk.red(err.message));
+          else console.error(chalk.red(err.message));
+          if (debugEnabled) console.error(err.stack);
+        }
+        process.exitCode = 1;
+      };
+
+      let merged;
+      try {
+        const config = await loadConfig();
+        for (const key of findUnknownConfigKeys(config, command, ['diff'])) {
+          // stderr, so `--json` consumers reading stdout aren't disturbed
+          console.error(chalk.yellow(`⚠ Unknown key "${key}" in shotsweep.config.json — ignored.`));
+        }
+        merged = normalizeRepeatable(mergeOptions(config, opts, command));
+      } catch (err) {
+        reportFailure(err, null, opts.debug);
+        return;
+      }
       const debug = createDebugLogger(merged.debug);
 
       if (merged.dryRun) {
-        const { targets } = await runCapture({
-          ...merged,
-          debug,
-        });
-
-        if (merged.json) {
-          console.log(JSON.stringify({ dryRun: true, targets }));
-        } else {
-          console.log(
-            chalk.cyan(
-              `Would capture ${targets.length} URL${
-                targets.length === 1 ? '' : 's'
-              }:`,
-            ),
-          );
-
-          targets.forEach((url) => {
-            console.log(chalk.dim(`  ${url}`));
+        try {
+          const { targets } = await runCapture({
+            ...merged,
+            debug,
           });
+
+          if (merged.json) {
+            console.log(JSON.stringify({ dryRun: true, targets }));
+          } else {
+            console.log(
+              chalk.cyan(
+                `Would capture ${targets.length} URL${
+                  targets.length === 1 ? '' : 's'
+                }:`,
+              ),
+            );
+
+            targets.forEach((url) => {
+              console.log(chalk.dim(`  ${url}`));
+            });
+          }
+        } catch (err) {
+          reportFailure(err, null, merged.debug);
         }
 
         return;
@@ -424,9 +542,8 @@ export function run(argv) {
         const { manifest, manifestPath, zipPath, recordPath, durationMs, total } = result;
         const successful = manifest.filter((entry) => !entry.error).length;
         const failed = manifest.filter((entry) => entry.error).length;
-        const seconds = (durationMs / 1000).toFixed(1);
+        const warningCount = manifest.reduce((n, entry) => n + (entry.warnings?.length ?? 0), 0);
         const avgMs = total ? Math.round(durationMs / total) : 0;
-        const avgSeconds = total ? (durationMs / total / 1000).toFixed(1) : '0.0';
 
         const duration = formatDuration(durationMs);
         const average = total
@@ -437,19 +554,29 @@ export function run(argv) {
           console.log(JSON.stringify({
             ok: successful,
             failed,
+            warnings: warningCount,
             total,
             durationMs,
             avgMs,
             manifestPath,
             zipPath,
             recordPath,
+            failures: manifest
+              .filter((entry) => entry.error)
+              .map(({ url, viewport, error }) => ({ url, viewport, error })),
           }));
         } else {
-          spinner?.succeed(
+          const summaryLine =
             `Captured ${chalk.green(successful)} screenshot${successful === 1 ? '' : 's'}` +
-              (failed ? `, ${chalk.red(failed + ' failed')}` : '') +
-              ` → ${chalk.cyan(merged.out)}`
-          );
+            (failed ? `, ${chalk.red(failed + ' failed')}` : '') +
+            (warningCount ? `, ${chalk.yellow(warningCount + ' warning' + (warningCount === 1 ? '' : 's'))}` : '') +
+            ` → ${chalk.cyan(merged.out)}`;
+          // When nothing succeeded, show the summary as a failure, not a green tick.
+          if (successful === 0) spinner?.fail(summaryLine);
+          else spinner?.succeed(summaryLine);
+          if (!spinner) console.log(summaryLine);
+
+          printProblems(manifest);
           console.log(chalk.dim(`Done in ${duration} (avg ${average}/page)`));
           console.log(chalk.dim(`Manifest: ${manifestPath}`));
           if (zipPath) console.log(chalk.dim(`Zip: ${zipPath}`));
@@ -461,13 +588,7 @@ export function run(argv) {
         }
         if (failed) process.exitCode = 1;
       } catch (err) {
-        if (merged.json) {
-          console.log(JSON.stringify({ error: err.message }));
-        } else {
-          spinner?.fail(chalk.red(err.message));
-          if (merged.debug) console.error(err.stack);
-        }
-        process.exitCode = 1;
+        reportFailure(err, spinner, merged.debug);
       }
     });
 
@@ -502,8 +623,9 @@ export function run(argv) {
      */
     .action(async (opts) => {
       const spinner = ora('Logging in...').start();
-      const browser = await chromium.launch();
+      let browser;
       try {
+        browser = await launchBrowser();
         const savedTo = await recordLoginSession(browser, {
           loginUrl: opts.loginUrl,
           emailSelector: opts.emailSelector,
@@ -518,7 +640,7 @@ export function run(argv) {
         spinner.fail(chalk.red(err.message));
         process.exitCode = 1;
       } finally {
-        await browser.close();
+        await browser?.close();
       }
     });
 
@@ -531,7 +653,13 @@ export function run(argv) {
     .option(
       '--threshold <ratio|percent|preset>',
       'how different a page can be before it counts as "changed" — e.g. 0.001 (a 0-1 fraction), "0.1%" (a percentage), or a preset: strict/default/loose',
-      normalizeThreshold,
+      (value) => {
+        try {
+          return normalizeThreshold(value);
+        } catch (err) {
+          throw new InvalidArgumentError(err.message);
+        }
+      },
       THRESHOLD_PRESETS.default,
     )
     .option('--zip', 'also bundle the diff output into a .zip when done', false)
@@ -592,11 +720,12 @@ Examples:
      * @returns {Promise<void>}
      */
     .action(async (oldManifest, newManifest, opts, command) => {
-      const config = await loadConfig();
-      const merged = mergeOptions(config, opts, command, 'diff');
-
-      const spinner = merged.json ? null : ora('Comparing runs...').start();
+      const spinner = opts.json ? null : ora('Comparing runs...').start();
+      let merged = opts;
       try {
+        const config = await loadConfig();
+        merged = mergeOptions(config, opts, command, 'diff');
+
         // Config-sourced threshold values (a percent string, a preset name, a
         // plain number typed in JSON) never pass through Commander's own
         // `--threshold` parser, so normalize here regardless of source.
@@ -632,12 +761,13 @@ Examples:
 
           console.log(chalk.dim(`\nReport: ${reportPath}`));
         } else {
-          spinner.succeed(
+          spinner?.succeed(
             `${chalk.yellow(summary.changed + ' changed')}, ` +
             `${chalk.dim(summary.unchanged + ' unchanged')}, ` +
             `${chalk.green(summary.added + ' added')}, ` +
             `${chalk.red(summary.removed + ' removed')}` +
-            (summary.sizeChanged ? `, ${chalk.magenta(summary.sizeChanged + ' resized')}` : '')
+            (summary.sizeChanged ? `, ${chalk.magenta(summary.sizeChanged + ' resized')}` : '') +
+            (summary.errors ? `, ${chalk.red(summary.errors + ' could not be compared')}` : '')
           );
           console.log(chalk.dim(`Report: ${reportPath}`));
           if (zipPath) console.log(chalk.dim(`Zip: ${zipPath}`));
@@ -650,7 +780,8 @@ Examples:
 
       } catch (err) {
         if (merged.json) console.log(JSON.stringify({ error: err.message }));
-        else spinner.fail(chalk.red(err.message));
+        else if (spinner) spinner.fail(chalk.red(err.message));
+        else console.error(chalk.red(err.message));
         process.exitCode = 1;
       }
     });

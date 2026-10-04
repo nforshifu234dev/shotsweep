@@ -126,3 +126,57 @@ test('runDiff reports "size-changed" when image dimensions differ', async () => 
   assert.equal(results[0].oldDimensions, '10x10');
   assert.equal(results[0].newDimensions, '20x20');
 });
+
+test('runDiff reports an unreadable screenshot as an error and fails closed, instead of crashing', async () => {
+  const dir = await tmpDir();
+  const { oldImg } = paths(dir);
+  await makePng(oldImg, {});
+  const missing = path.join(dir, 'after', 'full-1440x900.png'); // never created
+
+  const oldManifest = path.join(dir, 'old-manifest.json');
+  const newManifest = path.join(dir, 'new-manifest.json');
+  const entry = (file) => ([{ url: 'https://example.com', viewport: '1440x900', file }]);
+  await fs.writeFile(oldManifest, JSON.stringify(entry(oldImg)));
+  await fs.writeFile(newManifest, JSON.stringify(entry(missing)));
+
+  const { summary, results, decision } = await runDiff({
+    oldManifest, newManifest, out: path.join(dir, 'diff'), threshold: 0.001,
+  });
+
+  assert.equal(summary.errors, 1);
+  assert.equal(results[0].status, 'error');
+  assert.equal(decision.verdict, 'fail');
+});
+
+test('runDiff matches entries across Windows and POSIX path separators and trailing-slash URL differences', async () => {
+  const dir = await tmpDir();
+  const { oldImg, newImg } = paths(dir);
+  await makePng(oldImg, {});
+  await makePng(newImg, {});
+
+  const oldManifest = path.join(dir, 'old-manifest.json');
+  const newManifest = path.join(dir, 'new-manifest.json');
+  await fs.writeFile(oldManifest, JSON.stringify([
+    { url: 'https://example.com', viewport: '1440x900', file: oldImg.split(path.sep).join('\\') },
+  ]));
+  await fs.writeFile(newManifest, JSON.stringify([
+    { url: 'https://example.com/', viewport: '1440x900', file: newImg.split(path.sep).join('/') },
+  ]));
+
+  const { summary } = await runDiff({
+    oldManifest, newManifest, out: path.join(dir, 'diff'), threshold: 0.001,
+  });
+  assert.equal(summary.unchanged, 1);
+  assert.equal(summary.added + summary.removed, 0);
+});
+
+test('resolveManifestFile finds a screenshot relative to a moved manifest', async () => {
+  const dir = await tmpDir();
+  await makePng(path.join(dir, 'example.com', 'home', 'full-1440x900.png'), {});
+  const { resolveManifestFile } = await import('../src/diff.js');
+  const found = await resolveManifestFile(
+    path.join(dir, 'manifest.json'),
+    'screenshots\\example.com\\home\\full-1440x900.png', // recorded on another machine/folder
+  );
+  await fs.access(found);
+});

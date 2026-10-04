@@ -47,6 +47,10 @@
  *   document dimensions, detected scroll containers, section counts, and
  *   generated files is emitted through this callback.
  *
+ * @param {{ animations?: 'allow' | 'disabled', timeout?: number }} [options={}]
+ *   `timeout` — per-screenshot timeout in ms. `animations` — passed to Playwright's screenshot; `'disabled'` fast-forwards
+ *   finite CSS animations/transitions and cancels infinite ones.
+ *
  * @returns {Promise<string[]>}
  *   Absolute or output-relative paths to all generated section
  *   screenshots, in capture order.
@@ -74,7 +78,20 @@ export async function captureSections(
   path,
   fs,
   debug = () => {},
+  options = {},
 ) {
+  // Remove section files left over from an earlier run at this viewport. If
+  // the page got shorter since then, `section-07-…png` would otherwise sit
+  // next to this run's output looking like part of it (and get zipped).
+  const stalePattern = new RegExp(`^section-\\d+-${viewport.width}x${viewport.height}\\.png$`);
+  try {
+    for (const name of await fs.readdir(outDirPath)) {
+      if (stalePattern.test(name)) await fs.rm(path.join(outDirPath, name), { force: true });
+    }
+  } catch {
+    // directory doesn't exist yet — nothing to clean
+  }
+
   // Allow Next.js/Nextra/client-side content to finish rendering.
   await page.waitForTimeout(500);
 
@@ -304,6 +321,8 @@ export async function captureSections(
     await page.screenshot({
       path: filePath,
       fullPage: false,
+      animations: options.animations ?? 'allow',
+      timeout: options.timeout,
     });
 
     files.push(filePath);

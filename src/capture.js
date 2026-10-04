@@ -2,12 +2,15 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import chalk from 'chalk';
-import { chromium } from 'playwright';
 import { resolveTargets, outDirFor } from './inputs.js';
-import { buildContextOptions } from './auth.js';
+import { buildContextOptions, installScopedHeaders } from './auth.js';
+import { launchBrowser } from './browser.js';
+import { toArray } from './config.js';
 import { captureSections } from './sections.js';
 import { captureElement } from './element.js';
-import { buildRunRecord, writeRunRecord } from './provenance.js';
+import { autoScroll, settleImages } from './scroll.js';
+import { mergeManifests, readExistingManifest, toPosix, writeManifestAtomic } from './manifest.js';
+import { buildRunRecord, redactUrlCredentials, writeRunRecord } from './provenance.js';
 import { zipOutput } from './zip.js';
 import { withRetries } from './retry.js';
 
@@ -31,11 +34,12 @@ const VIEWPORT_PRESETS = {
  * @returns {{ width: number, height: number }} The resolved viewport dimensions.
  * @throws {Error} If `v` is not a known preset and not a valid `"WxH"` string.
  */
-function parseViewport(v) {
+export function parseViewport(v) {
   if (VIEWPORT_PRESETS[v]) {
     return VIEWPORT_PRESETS[v];
   }
-  const [width, height] = v.split('x').map(Number);
+  const match = /^(\d+)\s*x\s*(\d+)$/i.exec(String(v).trim());
+  const [width, height] = match ? [Number(match[1]), Number(match[2])] : [0, 0];
   if (!width || !height) {
     throw new Error(
       `Invalid --viewport "${v}", expected e.g. "1440x900" or one of: ${Object.keys(VIEWPORT_PRESETS).join(', ')}.`
@@ -63,8 +67,103 @@ async function runWithConcurrency(items, limit, worker) {
       results[current] = await worker(items[current]);
     }
   }
-  await Promise.all(Array.from({ length: Math.max(1, limit) }, next));
+  // `limit` can be undefined/NaN when runCapture is called as a library; fall
+  // back to 1 rather than starting zero workers (which silently runs nothing).
+  const workers = Math.max(1, Math.floor(Number(limit)) || 1);
+  await Promise.all(Array.from({ length: workers }, next));
   return results;
+}
+
+/**
+ * Removes ANSI colour escape sequences. Playwright wraps parts of its error
+ * messages in them, which is how `\u001b[2m` ended up inside manifest.json.
+ *
+ * @param {string} text - Text possibly containing ANSI escapes.
+ * @returns {string} The text without escapes.
+ */
+function stripAnsi(text) {
+  // eslint-disable-next-line no-control-regex
+  return String(text).replace(/\u001b\[[0-9;]*m/g, '');
+}
+
+/** Chromium's practical limit for a single full-page screenshot, in CSS pixels. */
+const TALL_PAGE_WARNING_PX = 16384;
+
+/**
+ * Reads the pixel height out of a PNG file's header (IHDR chunk) without
+ * decoding the image.
+ *
+ * @param {string} filePath - Path to a PNG file.
+ * @returns {Promise<number|null>} The image height, or `null` if it can't be read.
+ */
+async function readPngHeight(filePath) {
+  let handle;
+  try {
+    handle = await fs.open(filePath, 'r');
+    const buffer = Buffer.alloc(24);
+    await handle.read(buffer, 0, 24, 0);
+    return buffer.readUInt32BE(20);
+  } catch {
+    return null;
+  } finally {
+    await handle?.close();
+  }
+}
+
+/**
+ * Navigates a page, with retries, and — unless `opts.strictLoad` is set —
+ * tolerates the wait condition timing out when the page itself is usable.
+ *
+ * Many real sites never fire `load` (or never reach `networkidle`) within a
+ * reasonable time because a tracker, chat widget, or video keeps a request
+ * open, even though the page is fully rendered. Failing the whole capture in
+ * that case helps nobody. If the wait times out but navigation did commit and
+ * the document is at least `interactive`, the capture proceeds and a warning
+ * is recorded. A page that never responded at all (still blank) is still an error.
+ *
+ * @param {import('playwright').Page} page - The page to navigate.
+ * @param {string} url - The URL to open.
+ * @param {object} opts - Capture options (`waitUntil`, `timeout`, `retries`, `strictLoad`).
+ * @param {string[]} warnings - Array that warning messages are appended to.
+ * @param {(...args: unknown[]) => void} debug - Debug logger.
+ * @returns {Promise<void>}
+ * @throws {Error} If navigation fails, or times out on a page that never rendered (or `strictLoad` is set).
+ */
+async function navigate(page, url, opts, warnings, debug) {
+  const waitUntil = opts.waitUntil ?? 'load';
+  const timeout = opts.timeout ?? 30000;
+  const retries = opts.retries ?? 0;
+
+  try {
+    await withRetries(
+      () => page.goto(url, { waitUntil, timeout }),
+      retries,
+      {
+        delayMs: 1000,
+        onRetry: (err, attempt) =>
+          debug(`Retry ${attempt}/${retries} for ${url}: ${stripAnsi(err.message).split('\n')[0]}`),
+      },
+    );
+  } catch (err) {
+    const timedOut = err?.name === 'TimeoutError' || /Timeout \d+ms exceeded/.test(err?.message ?? '');
+    if (!timedOut || opts.strictLoad || waitUntil === 'domcontentloaded') throw err;
+
+    const committed = !/^(about:|chrome-error:)/.test(page.url());
+    const readyState = committed ? await page.evaluate(() => document.readyState).catch(() => null) : null;
+
+    if (readyState === 'interactive' || readyState === 'complete') {
+      warnings.push(
+        `"${waitUntil}" didn't fire within ${timeout}ms (document was ${readyState}); captured anyway. ` +
+          'Pass --strict-load to fail instead, or --wait-until domcontentloaded to skip the wait (images are still awaited after scrolling, see --image-wait).',
+      );
+      debug(`Navigation to ${url} timed out waiting for "${waitUntil}", but the document is ${readyState} — continuing.`);
+      // Cancel whatever is still in flight (the stalled request that kept
+      // `load` from firing). Otherwise the screenshot call can hang on it too.
+      await page.evaluate(() => window.stop()).catch(() => {});
+      return;
+    }
+    throw err;
+  }
 }
 
 /**
@@ -106,6 +205,13 @@ async function runWithConcurrency(items, limit, worker) {
  * @param {number} [opts.concurrency=1] - Number of pages to capture in parallel.
  * @param {number} [opts.timeout] - Per-page navigation timeout in ms.
  * @param {number} [opts.retries=0] - Number of times to retry a failed page load.
+ * @param {boolean} [opts.scroll=true] - Scroll the page top-to-bottom before capturing (full and sections modes) so scroll-reveal animations and lazy-loaded images have appeared. Pass `false` to capture the page exactly as first rendered.
+ * @param {number} [opts.imageWait=10000] - Milliseconds to wait, after scrolling, for images that are still loading or were cancelled and re-requested. Images that still haven't loaded are reported as a warning.
+ * @param {boolean} [opts.strictLoad=false] - Fail a job when `waitUntil` times out, instead of capturing the page anyway (with a warning) if its document is already usable.
+ * @param {string} [opts.userAgent] - User-Agent to present instead of Chromium's headless default (some hosts block `HeadlessChrome`).
+ * @param {boolean} [opts.ignoreHttpsErrors=false] - Accept invalid or self-signed TLS certificates (staging servers).
+ * @param {boolean} [opts.headersAllOrigins=false] - Send `bearer`/`header` values to every origin the page contacts. By default they go only to the captured site (and its subdomains), never to third parties.
+ * @param {boolean} [opts.freezeAnimations=false] - Fast-forward finite CSS animations and cancel infinite ones when taking screenshots, for steadier captures and diffs.
  * @param {boolean} [opts.zip] - Whether to bundle the output directory into a `.zip` when done.
  * @param {boolean} [opts.record=true] - Whether to write a `run-record.json` provenance snapshot (tool/browser/OS versions, redacted config, content-hashed artifacts) to `opts.out`. Pass `false` to skip it for throwaway/local runs.
  * @param {boolean} [opts.dryRun] - If true, resolve (and slice) targets and return them without capturing anything.
@@ -120,22 +226,38 @@ async function runWithConcurrency(items, limit, worker) {
  * @throws {Error} If no URLs could be resolved from the given input.
  */
 export async function runCapture(opts) {
+  // Work on a copy so defaults applied here don't leak into the caller's object.
+  opts = { ...opts, out: opts.out ?? './screenshots' };
+
   const debug =
     typeof opts.debug === 'function'
       ? opts.debug
       : () => {};
 
+  const mode = opts.mode ?? 'full';
   const validModes = ['full', 'sections', 'element'];
-  if (opts.mode && !validModes.includes(opts.mode)) {
+  if (!validModes.includes(mode)) {
     throw new Error(
       `Invalid --mode "${opts.mode}". Expected one of: ${validModes.join(', ')}.`,
     );
   }
 
-  if (opts.mode === 'element' && !opts.selector) {
+  if (mode === 'element' && !opts.selector) {
     throw new Error(
       '--mode element requires --selector <css> identifying the element to capture.',
     );
+  }
+
+  // Validate cheap, local things first so a typo fails in milliseconds
+  // instead of after a sitemap download or a browser launch.
+  const viewports = (toArray(opts.viewport).length ? toArray(opts.viewport) : ['desktop']).map(parseViewport);
+
+  if (opts.limit !== undefined && opts.limit !== null && !(Number.isInteger(opts.limit) && opts.limit > 0)) {
+    throw new Error(`Invalid --limit "${opts.limit}". Expected a positive integer.`);
+  }
+  const offset = opts.offset ?? 0;
+  if (!Number.isInteger(offset) || offset < 0) {
+    throw new Error(`Invalid --offset "${opts.offset}". Expected 0 or a positive integer.`);
   }
 
   const targets = await resolveTargets(opts);
@@ -149,22 +271,27 @@ export async function runCapture(opts) {
     );
   }
 
-  // NEW — apply --limit / --offset before anything else touches targets
-  const offset = opts.offset ?? 0;
+  // apply --limit / --offset before anything else touches targets
   const scopedTargets = opts.limit
     ? targets.slice(offset, offset + opts.limit)
     : targets.slice(offset);
+
+  if (!scopedTargets.length) {
+    throw new Error(
+      `--offset ${offset} skips all ${targets.length} resolved URL(s) — nothing to capture.`
+    );
+  }
 
   if (scopedTargets.length !== targets.length) {
     debug(`--limit/--offset applied: ${scopedTargets.length} of ${targets.length} target(s) selected.`);
   }
 
-  opts.onResolved?.(scopedTargets); // was: opts.onResolved?.(targets)
+  opts.onResolved?.(scopedTargets);
 
   if (opts.dryRun) {
     return {
       dryRun: true,
-      targets: scopedTargets, // was: targets
+      targets: scopedTargets,
       manifest: [],
       manifestPath: null,
       zipPath: null,
@@ -172,55 +299,50 @@ export async function runCapture(opts) {
     };
   }
 
+  const concurrency = Math.max(1, Math.floor(Number(opts.concurrency)) || 1);
   const cpuCount = os.cpus().length;
-  if (opts.concurrency > cpuCount) {
+  if (concurrency > cpuCount) {
     console.log(chalk.yellow(
-      `⚠ --concurrency ${opts.concurrency} exceeds your ${cpuCount} CPU core(s). ` +
+      `⚠ --concurrency ${concurrency} exceeds your ${cpuCount} CPU core(s). ` +
       `Each page runs a full Chromium instance — consider ${cpuCount} or lower.`
     ));
   }
 
-  const viewports = (opts.viewport?.length ? opts.viewport : ['desktop']).map(parseViewport);
-
-  // NEW — read any existing manifest ONCE, up front, before the run starts.
-  // Used both for --resume filtering and as the merge base at the end
-  // (previously this read happened only at the end).
+  // Read any existing manifest ONCE, up front, before the run starts. Used
+  // both for --resume filtering and as the merge base at the end.
   const manifestPath = path.join(opts.out, 'manifest.json');
-  let existing = [];
-  try {
-    existing = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
-  } catch {}
+  const existing = await readExistingManifest(manifestPath, debug);
 
   // build the set of already-completed url+viewport pairs
   const completedSet = new Set();
   if (opts.resume) {
-    for (const entry of existing) {
-      // Only 'full' mode entries are trustworthy for resume — a sections job
-      // may have crashed partway through writing its slices, and a single
-      // successful entry can't currently prove all sections were written.
-      // See runCapture's JSDoc for the tracked limitation.
-      if (!entry.error && entry.mode === 'full') {
-        completedSet.add(`${entry.url}::${entry.viewport}`);
+    if (mode === 'full') {
+      for (const entry of existing) {
+        // Only 'full' mode entries are trustworthy for resume — a sections job
+        // may have crashed partway through writing its slices, and a single
+        // successful entry can't currently prove all sections were written.
+        // Also require the screenshot to still exist: a manifest entry for a
+        // file the user has since deleted is not "already captured".
+        if (!entry.error && entry.mode === 'full' && entry.file) {
+          const stillThere = await fs.access(entry.file).then(() => true, () => false);
+          if (stillThere) completedSet.add(`${entry.url}::${entry.viewport}`);
+        }
       }
-    }
-    debug(`--resume: ${completedSet.size} already-completed URL/viewport pair(s) found in existing manifest.`);
-
-    if (opts.mode === 'sections') {
+      debug(`--resume: ${completedSet.size} already-completed URL/viewport pair(s) found in existing manifest.`);
+    } else {
       console.log(chalk.yellow(
-        '⚠ --resume with --mode sections: completeness can\'t be verified per-section yet, ' +
-        'so sections jobs are always re-captured on resume (only full-page jobs are skipped).'
+        `⚠ --resume with --mode ${mode}: completeness can't be verified yet, ` +
+        `so ${mode} jobs are always re-captured on resume (only full-page jobs are skipped).`
       ));
     }
   }
 
-  const { contextOptions, cookies } = await buildContextOptions(opts);
-  const browser = await chromium.launch();
-  const browserVersion = browser.version();
+  const { contextOptions, cookies, scopedHeaders } = await buildContextOptions(opts);
 
-  let jobs = scopedTargets.flatMap((url) => viewports.map((viewport) => ({ url, viewport }))); // was: targets.flatMap(...)
+  let jobs = scopedTargets.flatMap((url) => viewports.map((viewport) => ({ url, viewport })));
 
   // filter out already-completed jobs when --resume is set
-  if (opts.resume) {
+  if (opts.resume && completedSet.size) {
     const beforeCount = jobs.length;
     jobs = jobs.filter(({ url, viewport }) => !completedSet.has(`${url}::${viewport.width}x${viewport.height}`));
     if (jobs.length !== beforeCount) {
@@ -232,94 +354,144 @@ export async function runCapture(opts) {
   let completed = 0;
   const startedAt = Date.now();
 
-  const jobResults = await runWithConcurrency(jobs, opts.concurrency, async ({ url, viewport }) => {
-    const outDirPath = outDirFor(opts.out, url);
-    await fs.mkdir(outDirPath, { recursive: true });
+  const browser = await launchBrowser();
+  const browserVersion = browser.version();
+  const animations = opts.freezeAnimations ? 'disabled' : 'allow';
 
-    const context = await browser.newContext({
-      ...contextOptions, viewport, colorScheme: opts.dark ? 'dark' : 'light',
+  let jobResults;
+  try {
+    jobResults = await runWithConcurrency(jobs, concurrency, async ({ url, viewport }) => {
+      const viewportLabel = `${viewport.width}x${viewport.height}`;
+      const safeUrl = redactUrlCredentials(url);
+      const warnings = [];
+      let context;
+      let outcome;
+
+      // Everything that can fail for a single page — including creating its
+      // folder and browser context — lives inside this try, so one bad job
+      // is recorded as an error entry instead of aborting the whole batch.
+      try {
+        const outDirPath = outDirFor(opts.out, url);
+        await fs.mkdir(outDirPath, { recursive: true });
+
+        context = await browser.newContext({
+          ...contextOptions, viewport, colorScheme: opts.dark ? 'dark' : 'light',
+        });
+        if (cookies.length) await context.addCookies(cookies);
+        await installScopedHeaders(context, url, scopedHeaders);
+        const page = await context.newPage();
+
+        await navigate(page, url, opts, warnings, debug);
+
+        if (opts.wait !== undefined && opts.wait !== null && String(opts.wait).trim() !== '') {
+          const asMs = Number(opts.wait);
+          if (!Number.isNaN(asMs)) {
+            await page.waitForTimeout(asMs);
+          } else {
+            const waitTimeout = opts.timeout ?? 30000;
+            await page.waitForSelector(String(opts.wait), { timeout: waitTimeout }).catch(() => {
+              // A selector that never appears is worth knowing about — it's
+              // usually a typo — but the page itself may still be fine to capture.
+              warnings.push(`--wait selector "${opts.wait}" didn't appear within ${waitTimeout}ms; captured anyway.`);
+            });
+          }
+        }
+
+        // Trigger scroll-reveal animations and lazy-loaded images so content
+        // below the first screen isn't captured in its hidden state.
+        // The scroll warm-up also settles images; when it doesn't run (--no-scroll,
+        // or element mode) still give images a bounded chance to finish, and
+        // cancel stalled ones so the screenshot call can't hang on them.
+        let imageStats = null;
+        if (opts.scroll !== false && mode !== 'element') {
+          imageStats = (await autoScroll(page, { debug: opts.debug, imageWaitMs: opts.imageWait }))?.images ?? null;
+        } else {
+          imageStats = await settleImages(page, { imageWaitMs: opts.imageWait }).catch(() => null);
+        }
+
+        const unfinished = (imageStats?.broken ?? 0) + (imageStats?.stillLoading ?? 0);
+        if (unfinished > 0) {
+          warnings.push(
+            `${unfinished} of ${imageStats.total} image(s) didn't finish loading and will appear blank or as alt text. ` +
+            'Try --image-wait 30000, or check whether the host is slow or blocking headless browsers (--user-agent).',
+          );
+        }
+
+        let files = [];
+        if (mode === 'element') {
+          files = await captureElement(
+            page,
+            opts.selector,
+            outDirPath,
+            path,
+            fs,
+            opts.debug,
+            { timeout: opts.timeout, animations },
+          );
+        } else if (mode === 'sections') {
+          files = await captureSections(page, viewport, outDirPath, path, fs, opts.debug, { animations, timeout: opts.timeout });
+        } else {
+          const fileName = `full-${viewport.width}x${viewport.height}.png`;
+          const filePath = path.join(outDirPath, fileName);
+          await page.screenshot({ path: filePath, fullPage: true, animations, timeout: opts.timeout });
+          files = [filePath];
+
+          const height = await readPngHeight(filePath);
+          if (height && height >= TALL_PAGE_WARNING_PX) {
+            warnings.push(
+              `The full-page screenshot is ${height}px tall; Chromium can clip captures this large. ` +
+              'Check the bottom of the image, or use --mode sections.',
+            );
+          }
+        }
+
+        if (!files.length) {
+          throw new Error(
+            `No screenshots were produced for ${safeUrl} (${viewportLabel}).`
+          );
+        }
+
+        outcome = await Promise.all(files.map(async (filePath) => {
+          const stat = await fs.stat(filePath);
+          return {
+            url: safeUrl, mode, viewport: viewportLabel,
+            ...(mode === 'element' ? { selector: opts.selector } : {}),
+            file: toPosix(filePath), sizeBytes: stat.size, timestamp: new Date().toISOString(),
+            ...(warnings.length ? { warnings } : {}),
+          };
+        }));
+      } catch (err) {
+        const message = stripAnsi(err?.message ?? String(err));
+        opts.debug?.(`Capture failed: ${safeUrl} (${viewportLabel})`, message);
+
+        outcome = [{
+          url: safeUrl, mode, viewport: viewportLabel,
+          ...(mode === 'element' ? { selector: opts.selector } : {}),
+          error: message, timestamp: new Date().toISOString(),
+          ...(warnings.length ? { warnings } : {}),
+        }];
+      } finally {
+        await context?.close().catch(() => {});
+      }
+
+      completed++;
+      opts.onProgress?.({
+        completed, total, url: safeUrl,
+        viewport: viewportLabel,
+        ok: !outcome.some((r) => r.error),
+      });
+
+      return outcome;
     });
-    if (cookies.length) await context.addCookies(cookies);
-    const page = await context.newPage();
+  } finally {
+    // Always release Chromium — an exception above used to leave it running.
+    await browser.close().catch(() => {});
+  }
 
-    let outcome;
-    try {
-      await withRetries(
-        () => page.goto(url, { waitUntil: opts.waitUntil ?? 'load', timeout: opts.timeout }),
-        opts.retries ?? 0,
-      );
-
-      if (opts.wait) {
-        const asMs = Number(opts.wait);
-        if (!Number.isNaN(asMs)) await page.waitForTimeout(asMs);
-        else await page.waitForSelector(opts.wait, { timeout: 15000 }).catch(() => {});
-      }
-
-      let files = [];
-      if (opts.mode === 'element') {
-        files = await captureElement(
-          page,
-          opts.selector,
-          outDirPath,
-          path,
-          fs,
-          opts.debug,
-          { timeout: opts.timeout },
-        );
-      } else if (opts.mode === 'sections') {
-        files = await captureSections(page, viewport, outDirPath, path, fs, opts.debug);
-      } else {
-        const fileName = `full-${viewport.width}x${viewport.height}.png`;
-        const filePath = path.join(outDirPath, fileName);
-        await page.screenshot({ path: filePath, fullPage: true });
-        files = [filePath];
-      }
-
-      if (!files.length) {
-        throw new Error(
-          `No screenshots were produced for ${url} (${viewport.width}x${viewport.height}).`
-        );
-      }
-
-      outcome = await Promise.all(files.map(async (filePath) => {
-        const stat = await fs.stat(filePath);
-        return {
-          url, mode: opts.mode, viewport: `${viewport.width}x${viewport.height}`,
-          file: filePath, sizeBytes: stat.size, timestamp: new Date().toISOString(),
-        };
-      }));
-    } catch (err) {
-      opts.debug?.(
-        `Capture failed: ${url} (${viewport.width}x${viewport.height})`,
-        err.message,
-      );
-
-      outcome = [{
-        url, mode: opts.mode, viewport: `${viewport.width}x${viewport.height}`,
-        error: err.message, timestamp: new Date().toISOString(),
-      }];
-    } finally {
-      await context.close();
-    }
-
-    completed++;
-    opts.onProgress?.({
-      completed, total, url,
-      viewport: `${viewport.width}x${viewport.height}`,
-      ok: !outcome.some((r) => r.error),
-    });
-
-    return outcome;
-  });
-
-  await browser.close();
   const manifest = jobResults.flat();
   const durationMs = Date.now() - startedAt;
 
-  await fs.mkdir(opts.out, { recursive: true });
-  // NOTE: no second manifestPath declaration or second existing-read here —
-  // both now reuse the ones read at the top of the function
-  await fs.writeFile(manifestPath, JSON.stringify([...existing, ...manifest], null, 2));
+  await writeManifestAtomic(manifestPath, mergeManifests(existing, manifest));
 
   // Provenance record: a snapshot of the tool/browser/OS versions, the
   // resolved (secret-redacted) config, and content-hashed artifacts for

@@ -6,11 +6,19 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # The capture tests drive a real Chromium, and most users run on Windows,
+    # where path-separator bugs live — so test on both.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm ci
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
       - run: npm test

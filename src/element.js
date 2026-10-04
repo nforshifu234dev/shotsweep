@@ -42,9 +42,10 @@
  * @param {(...args: unknown[]) => void} [debug=() => {}]
  *   Optional diagnostic logger.
  *
- * @param {{ timeout?: number }} [options={}]
+ * @param {{ timeout?: number, animations?: 'allow' | 'disabled' }} [options={}]
  *   `timeout` — how long (ms) to wait for the selector to become visible
- *   before failing. Defaults to 15000.
+ *   before failing. Defaults to 15000. `animations` — passed to Playwright's
+ *   screenshot (`'disabled'` freezes animations).
  *
  * @returns {Promise<string[]>}
  *   A single-element array containing the path to the generated screenshot,
@@ -91,6 +92,24 @@ export async function captureElement(
   await locator.scrollIntoViewIfNeeded();
   await page.waitForTimeout(150);
 
+  // Entrance animations typically run 300-800ms — longer than the pause
+  // above. Wait for the element's own finite animations/transitions to finish
+  // (capped, and ignoring infinite ones such as spinners) so it isn't
+  // captured half-faded.
+  await locator
+    .evaluate((el) =>
+      Promise.race([
+        Promise.all(
+          el
+            .getAnimations({ subtree: true })
+            .filter((a) => a.effect?.getComputedTiming().iterations !== Infinity)
+            .map((a) => a.finished.catch(() => {})),
+        ),
+        new Promise((resolve) => setTimeout(resolve, 2000)),
+      ]),
+    )
+    .catch(() => {});
+
   const box = await locator.boundingBox();
   if (!box || box.width === 0 || box.height === 0) {
     throw new Error(
@@ -109,7 +128,7 @@ export async function captureElement(
     `element-${Math.round(box.width)}x${Math.round(box.height)}.png`;
   const filePath = path.join(outDirPath, fileName);
 
-  await locator.screenshot({ path: filePath });
+  await locator.screenshot({ path: filePath, animations: options.animations ?? 'allow', timeout });
 
   debug(`Wrote element screenshot: ${filePath}`);
 

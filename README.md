@@ -263,6 +263,39 @@ without maintaining separate URL lists.
 
 # 📸 Capture Modes
 
+## Pages that reveal content on scroll, or never finish loading
+
+**Scroll-reveal and lazy images.** Full-page and sections captures scroll the
+page from top to bottom (and back) before taking the screenshot, so sections
+that fade in on scroll and `loading="lazy"` images have appeared. Without this,
+everything below the first screen is captured blank. Turn it off with
+`--no-scroll` if you want the page exactly as first rendered.
+
+**Pages that never fire `load`.** Trackers, chat widgets and stalled images can
+keep `load` from firing for minutes on a page that is otherwise fully
+rendered. If `--wait-until` times out but the document is already usable,
+ShotSweep captures it anyway, cancels the stalled requests, and records a
+warning in `manifest.json`. Use `--strict-load` to fail instead, or
+`--wait-until domcontentloaded` to skip waiting for `load` altogether.
+
+```bash
+shotsweep capture --url https://example.com --wait-until domcontentloaded --wait 3000
+```
+
+**Other useful flags**
+
+| Flag | What it does |
+| --- | --- |
+| `--image-wait <ms>` | After scrolling, how long to wait for images still loading (default 10000). Images cancelled earlier are re-requested once; any that still fail are reported as a warning. Raise it for slow hosts. |
+| `--freeze-animations` | Fast-forwards finite CSS animations and cancels infinite ones, for steadier screenshots and diffs. |
+| `--user-agent <string>` | Presents a normal browser User-Agent; some hosts stall or block `HeadlessChrome`. |
+| `--ignore-https-errors` | Accepts self-signed or invalid certificates (staging servers). |
+| `--headers-all-origins` | Sends `--bearer` / `--header` values to every origin. By default they go only to the captured site and its subdomains, never to third parties. |
+
+URLs are forgiving: `example.com` gets `https://` added (`http://` for
+localhost), and a pasted Markdown link such as `[x](https://x.com)` is
+unwrapped. Invalid URLs are reported together, up front.
+
 ## Full-page capture
 
 ```bash

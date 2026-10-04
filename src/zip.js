@@ -1,4 +1,5 @@
 // src/zip.js
+import path from 'node:path';
 import { createWriteStream } from 'node:fs';
 import { ZipArchive } from 'archiver';
 
@@ -6,8 +7,8 @@ import { ZipArchive } from 'archiver';
  * Creates a ZIP archive containing the contents of a ShotSweep
  * output directory.
  *
- * The generated archive is written alongside the output directory
- * using the same path with a `.zip` extension.
+ * The generated archive is written alongside the output directory, named
+ * after it, in the directory's parent.
  *
  * For example:
  *
@@ -16,6 +17,9 @@ import { ZipArchive } from 'archiver';
  * becomes:
  *
  *     ./screenshots.zip
+ *
+ * and `--out .` (the current directory, e.g. `C:\work\shots`) becomes
+ * `C:\work\shots.zip` — outside the folder being archived.
  *
  * The output directory itself is not added as a parent directory
  * inside the archive. Its contents are placed at the root of the ZIP.
@@ -30,7 +34,13 @@ import { ZipArchive } from 'archiver';
  *   Rejects when the archive or output stream encounters an error.
  */
 export async function zipOutput(outDir) {
-  const zipPath = `${outDir.replace(/[/\\]+$/, '')}.zip`;
+  const resolvedDir = path.resolve(outDir);
+
+  // Always write the archive *next to* the directory, never inside it.
+  // (With `--out .` the old code produced a file literally named "..zip" and
+  // told the archiver to include the directory it was still writing into.)
+  const baseName = path.basename(resolvedDir) || 'shotsweep-output';
+  const zipPath = path.join(path.dirname(resolvedDir), `${baseName}.zip`);
 
   const output = createWriteStream(zipPath);
 
@@ -54,9 +64,12 @@ export async function zipOutput(outDir) {
     });
 
     /**
-     * Handle errors emitted by Archiver.
+     * Handle errors emitted by Archiver. Non-fatal warnings (e.g. a file
+     * disappearing mid-archive) are surfaced as failures too, rather than
+     * producing a silently incomplete archive.
      */
     archive.on('error', reject);
+    archive.on('warning', reject);
 
     /**
      * Pipe archive data into the destination ZIP file.
@@ -67,7 +80,7 @@ export async function zipOutput(outDir) {
      * Add the contents of the ShotSweep output directory
      * to the root of the archive.
      */
-    archive.directory(outDir, false);
+    archive.directory(resolvedDir, false);
 
     /**
      * Finalize the archive.

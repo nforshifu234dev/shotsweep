@@ -13,14 +13,57 @@ const CONFIG_FILENAMES = ['shotsweep.config.json', '.shotsweeprc.json'];
  */
 export async function loadConfig(cwd = process.cwd()) {
   for (const name of CONFIG_FILENAMES) {
+    let raw;
     try {
-      const raw = await fs.readFile(path.join(cwd, name), 'utf8');
-      return JSON.parse(raw);
-    } catch {
-      continue;
+      raw = await fs.readFile(path.join(cwd, name), 'utf8');
+    } catch (err) {
+      if (err.code === 'ENOENT') continue;
+      throw new Error(`Could not read ${name}: ${err.message}`);
+    }
+
+    try {
+      // Strip a UTF-8 BOM (added by some Windows editors) before parsing.
+      const parsed = JSON.parse(raw.replace(/^\uFEFF/, ''));
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('the top level must be a JSON object');
+      }
+      return parsed;
+    } catch (err) {
+      // A config file that exists but is broken must not be silently
+      // ignored — the run would proceed with settings the user thinks they changed.
+      throw new Error(`${name} is not valid: ${err.message}`);
     }
   }
   return {};
+}
+
+/**
+ * Lists config keys that don't correspond to any option of the command,
+ * so typos like `"viewports"` or `"waitUntill"` can be called out instead of
+ * being silently ignored.
+ *
+ * @param {object} config - Config object loaded via {@link loadConfig}.
+ * @param {import('commander').Command} command - The Commander command whose options define the valid keys.
+ * @param {string[]} [extraKnown] - Additional keys that are valid for this command (e.g. other commands' namespaces).
+ * @returns {string[]} Unknown top-level keys, in file order.
+ */
+export function findUnknownConfigKeys(config, command, extraKnown = []) {
+  const known = new Set([...command.options.map((o) => o.attributeName()), ...extraKnown]);
+  return Object.keys(config ?? {}).filter((key) => !known.has(key));
+}
+
+/**
+ * Wraps a value in an array if it isn't one already (and drops `undefined`/`null`).
+ * Config files commonly write `"viewport": "1440x900"` where the CLI flag form
+ * is repeatable, so every repeatable option has to accept both.
+ *
+ * @template T
+ * @param {T|T[]|undefined|null} value - A single value, an array, or nothing.
+ * @returns {T[]} An array.
+ */
+export function toArray(value) {
+  if (value === undefined || value === null) return [];
+  return Array.isArray(value) ? value : [value];
 }
 
 // CLI flags the user actually typed should win; config fills in anything

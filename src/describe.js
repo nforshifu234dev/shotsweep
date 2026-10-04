@@ -9,7 +9,7 @@
  * @param {object[]} manifest - The manifest entries produced by a capture run.
  * @param {string} manifest[].url - The URL the entry was captured from.
  * @param {string} [manifest[].viewport] - The `WxH` viewport string for the entry.
- * @param {string} [manifest[].mode] - The capture mode for the entry (`'full'` or `'sections'`).
+ * @param {string} [manifest[].mode] - The capture mode for the entry (`'full'`, `'sections'` or `'element'`).
  * @param {string} [manifest[].error] - Present if this entry failed to capture.
  * @param {object} options - Run-level context used in the summary header.
  * @param {string} options.out - The output directory the run was written to.
@@ -56,7 +56,19 @@ export function buildAiDescription(manifest, { out, mode }) {
       (e) => e.mode === 'full',
     ).length;
 
+    const elementCount = entries.filter(
+      (e) => e.mode === 'element',
+    ).length;
+
+    const warningLines = [...new Set(entries.flatMap((e) => e.warnings ?? []))];
+
     const details = [];
+
+    if (elementCount) {
+      details.push(
+        `${elementCount} element screenshot${elementCount === 1 ? '' : 's'}`
+      );
+    }
 
     if (sectionCount) {
       details.push(
@@ -76,6 +88,10 @@ export function buildAiDescription(manifest, { out, mode }) {
 
     if (details.length) {
       lines.push(`  Capture: ${details.join(', ')}`);
+    }
+
+    for (const warning of warningLines) {
+      lines.push(`  Warning: ${warning}`);
     }
 
     lines.push('');

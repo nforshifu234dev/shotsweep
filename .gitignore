@@ -10,3 +10,11 @@ file_structure_metadata.txt
 hello.txt
 ruleset.md
 *.diff
+*zip
+zip_project.py
+# Local capture output and test scratch
+test-capture/
+ci-screenshots/
+diff/
+manifest.json
+run-record.json
