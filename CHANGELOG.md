@@ -2,6 +2,19 @@
 
 All notable changes to the NFSFU234 ShotSweep Library will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and adheres to Semantic Versioning.
 
+## [1.3.0](https://github.com/nforshifu234dev/shotsweep/compare/v1.2.0...v1.3.0) (2026-10-04)
+
+
+### Features
+
+* capture scroll-reveal content, tolerate slow pages, and harden inputs, auth and manifests ([086912e](https://github.com/nforshifu234dev/shotsweep/commit/086912e2e99262719fc02402f74a1a032850c58e))
+* capture scroll-reveal content, tolerate slow pages, harden inputs, auth and manifests ([fce7e24](https://github.com/nforshifu234dev/shotsweep/commit/fce7e247371b69b7fa0f092dde4621c3d2680c52))
+
+
+### Bug Fixes
+
+* keep required build check name and harden tests for Windows CI ([f027009](https://github.com/nforshifu234dev/shotsweep/commit/f027009a381120daf4c985f5febe5a7b0aff3f8e))
+
 ## [1.2.0](https://github.com/nforshifu234dev/shotsweep/compare/v1.1.0...v1.2.0) (2026-09-22)
 
 
