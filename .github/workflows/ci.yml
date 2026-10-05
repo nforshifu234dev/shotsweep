@@ -14,12 +14,26 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # Keep Playwright's browser download inside the workspace so one cache
+      # path works on every OS (the defaults differ per platform).
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.pw-browsers
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
+          cache: npm
+      # Restore BEFORE `npm ci`: the package's postinstall downloads Chromium,
+      # and with a warm cache it finds the browser already there and skips it.
+      - name: Cache Playwright browsers
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - run: npm ci
+      # Downloads are skipped when cached; --with-deps still installs the
+      # system libraries Chromium needs on Linux.
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
       - run: npm test
